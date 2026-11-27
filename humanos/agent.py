@@ -1,5 +1,6 @@
 """Bounded execution of explicit tool requests; no shell or model-driven grants."""
 from dataclasses import dataclass
+from threading import Lock
 from .permissions import ToolRunner
 
 @dataclass(frozen=True)
@@ -14,17 +15,19 @@ class AgentSession:
         self._runner = runner
         self._limit = limit
         self._events = []
+        self._lock = Lock()
 
     @property
     def audit(self):
-        return tuple(self._events)
+        with self._lock:
+            return tuple(self._events)
 
     def execute(self, name: str, arguments: dict):
-        if len(self._events) >= self._limit:
-            raise RuntimeError('Session execution budget exhausted')
-        sequence = len(self._events) + 1
-        # Reserve budget before invoking a trusted handler.
-        self._events.append(AuditEvent(sequence, 'started'))
+        with self._lock:
+            if len(self._events) >= self._limit:
+                raise RuntimeError('Session execution budget exhausted')
+            sequence = len(self._events) + 1
+            self._events.append(AuditEvent(sequence, 'started'))
         outcome = 'failed'
         try:
             result = self._runner.execute(name, arguments)
@@ -34,4 +37,5 @@ class AgentSession:
             outcome = 'denied'
             raise
         finally:
-            self._events[sequence - 1] = AuditEvent(sequence, outcome)
+            with self._lock:
+                self._events[sequence - 1] = AuditEvent(sequence, outcome)
